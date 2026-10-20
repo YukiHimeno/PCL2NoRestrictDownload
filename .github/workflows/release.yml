@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       smoke_test:
-        description: 'Test OpenCode on the 2.99.0.0 source without building or publishing'
+        description: 'Test OpenCode and Windows build on 2.99.0.0 without publishing'
         type: boolean
         default: false
 
@@ -108,7 +108,7 @@ jobs:
 
   publish:
     needs: [detect, candidate]
-    if: needs.detect.outputs.tag != '' && !inputs.smoke_test
+    if: needs.detect.outputs.tag != ''
     runs-on: windows-latest
     permissions:
       contents: write
@@ -165,6 +165,7 @@ jobs:
         working-directory: upstream
         run: msbuild "Plain Craft Launcher 2/Plain Craft Launcher 2.vbproj" -p:Configuration=Release
       - name: Publish only after a successful build
+        if: ${{ !inputs.smoke_test }}
         shell: pwsh
         env:
           REPO: ${{ github.repository }}
