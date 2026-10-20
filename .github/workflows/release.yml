@@ -1,0 +1,91 @@
+name: Build upstream release without download restriction
+
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upstream-release
+  cancel-in-progress: false
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.select.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: select
+        name: Find the next unpublished upstream release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/release.py select
+
+  publish:
+    needs: detect
+    if: needs.detect.outputs.tag != ''
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    env:
+      UPSTREAM_TAG: ${{ needs.detect.outputs.tag }}
+      RELEASE_TAG: no-restrict-${{ needs.detect.outputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout automation (not PCL source)
+        uses: actions/checkout@v4
+        with:
+          path: automation
+      - name: Checkout released upstream source temporarily
+        uses: actions/checkout@v4
+        with:
+          repository: Meloong-Git/PCL
+          ref: ${{ needs.detect.outputs.tag }}
+          path: upstream
+          submodules: true
+          persist-credentials: false
+      - name: Patch exactly one upstream declaration
+        shell: pwsh
+        run: |
+          python automation/.github/scripts/release.py patch upstream
+          git -C upstream diff -- "Plain Craft Launcher 2/Modules/ModSecret.vb" > RestrictMcDownload.patch
+          if ($LASTEXITCODE -ne 0) { throw "Could not export the patch" }
+          if (!(Test-Path RestrictMcDownload.patch) -or (Get-Item RestrictMcDownload.patch).Length -eq 0) { throw "Empty patch" }
+      - name: Set up MSBuild
+        uses: microsoft/setup-msbuild@v3
+        with:
+          msbuild-architecture: x64
+      - name: Update help archive
+        shell: pwsh
+        run: |
+          $help = Join-Path $env:RUNNER_TEMP 'PCL2Help'
+          git clone --depth 1 --single-branch --branch master https://github.com/LTCatt/PCL2Help.git $help
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to clone help' }
+          Remove-Item -Path "$help/*.*" -Recurse -Force
+          Compress-Archive -Path "$help/*" -DestinationPath 'upstream/Plain Craft Launcher 2/Resources/Help.zip' -Force
+      - name: Restore NuGet packages
+        working-directory: upstream
+        run: dotnet restore PCLCS/PCLCS.csproj
+      - name: Build Release
+        working-directory: upstream
+        run: msbuild "Plain Craft Launcher 2/Plain Craft Launcher 2.vbproj" -p:Configuration=Release
+      - name: Publish only after a successful build
+        shell: pwsh
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          $exe = 'upstream/Plain Craft Launcher 2/obj/Release/Plain Craft Launcher 2.exe'
+          if (!(Test-Path $exe) -or (Get-Item $exe).Length -eq 0) { throw 'Release executable is missing' }
+          $source = git -C upstream rev-parse HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Could not identify upstream commit' }
+          @"
+          Third-party build based on [Meloong-Git/PCL release $env:UPSTREAM_TAG](https://github.com/Meloong-Git/PCL/releases/tag/$env:UPSTREAM_TAG), commit $source.
+          Not an official PCL release. The source was checked out temporarily; only the attached patch changes `RestrictMcDownload` from `True` to `False`.
+          Upstream source and distribution terms: https://github.com/Meloong-Git/PCL
+          "@ | Set-Content -Encoding utf8 release-notes.md
+          gh release create $env:RELEASE_TAG "$exe#PCL-NoRestrictDownload.exe" RestrictMcDownload.patch --repo $env:REPO --target $env:GITHUB_SHA --title "Plain Craft Launcher (PCL) NoRestrictDownload $env:UPSTREAM_TAG" --notes-file release-notes.md
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to publish GitHub release' }
