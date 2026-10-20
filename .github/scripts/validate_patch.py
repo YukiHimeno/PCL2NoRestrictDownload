@@ -18,8 +18,10 @@ def validate(original, modified):
     matches = DECLARATION.findall(modified)
     if matches != [b"False"]:
         raise ValueError("Candidate must contain exactly one explicit RestrictMcDownload = False declaration")
-    before = original.decode("utf-8-sig").splitlines(keepends=True)
-    after = modified.decode("utf-8-sig").splitlines(keepends=True)
+    before = original.decode("utf-8-sig").splitlines()
+    after = modified.decode("utf-8-sig").splitlines()
+    if before == after:
+        raise ValueError("Candidate only changed line endings")
     anchors = [index for index, line in enumerate(before) if re.match(r"^\s*Public\s+Const\s+RestrictMcDownload\s+As\s+Boolean\s*=", line)]
     if len(anchors) != 1 or len(before) != len(after):
         raise ValueError("Cannot locate a unique existing restriction declaration")
