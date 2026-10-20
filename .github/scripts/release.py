@@ -48,7 +48,7 @@ def choose_release():
         for value in (tag, base):
             if value and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,100}", value):
                 raise ValueError(f"Unsafe upstream release tag: {value!r}")
-        output_tag = "no-restrict-" + tag
+        output_tag = "patch-" + tag
         if api(f"repos/{DOWNSTREAM}/releases/tags/{quote(output_tag, safe='')}", missing_ok=True) is None:
             return tag, base
     return None

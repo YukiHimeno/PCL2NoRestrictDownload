@@ -51,7 +51,7 @@ class ReleaseTests(unittest.TestCase):
         next_one = {"id": 418095203, "tag_name": "3.0.0.0", "published_at": "2026-10-21T07:01:34Z", "draft": False}
         with patch.object(release, "api", side_effect=[[next_one, first], {"already": True}, None]) as api:
             self.assertEqual(release.choose_release(), ("3.0.0.0", "2.99.0.0"))
-            self.assertIn("no-restrict-3.0.0.0", api.call_args.args[0])
+            self.assertIn("patch-3.0.0.0", api.call_args.args[0])
 
     def test_rejects_unsafe_tag(self):
         candidate = {"id": 418095203, "tag_name": "../bad", "published_at": "2026-10-21T07:01:34Z", "draft": False}

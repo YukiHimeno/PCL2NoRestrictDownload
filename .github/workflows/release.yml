@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       smoke_test:
-        description: 'Test OpenCode and Windows build on 2.99.0.0 without publishing'
+        description: 'Test official-binary patch on 2.99.0.0 without publishing'
         type: boolean
         default: false
 
@@ -114,7 +114,7 @@ jobs:
       contents: write
     env:
       UPSTREAM_TAG: ${{ needs.detect.outputs.tag }}
-      RELEASE_TAG: no-restrict-${{ needs.detect.outputs.tag }}
+      RELEASE_TAG: patch-${{ needs.detect.outputs.tag }}
     steps:
       - name: Checkout automation (not PCL source)
         uses: actions/checkout@v4
@@ -164,22 +164,49 @@ jobs:
       - name: Build Release
         working-directory: upstream
         run: msbuild "Plain Craft Launcher 2/Plain Craft Launcher 2.vbproj" -p:Configuration=Release
-      - name: Publish only after a successful build
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Generate patch against the official binary, not the source build
+        shell: pwsh
+        run: |
+          $exe = 'upstream/Plain Craft Launcher 2/obj/Release/Plain Craft Launcher 2.exe'
+          if (!(Test-Path $exe) -or (Get-Item $exe).Length -eq 0) { throw 'Donor build is missing' }
+          $officialDir = Join-Path $env:RUNNER_TEMP 'official'
+          Expand-Archive -Path 'upstream/最新正式版.zip' -DestinationPath $officialDir
+          $official = Join-Path $officialDir 'Plain Craft Launcher 2.exe'
+          $patched = Join-Path $env:RUNNER_TEMP 'patched-official.exe'
+          dotnet run --project automation/src/ILPatch/ILPatch.csproj --configuration Release -- $official $exe $patched
+          if ($LASTEXITCODE -ne 0) { throw 'Official-binary IL patch verification failed' }
+          python -m pip install bsdiff4==1.3.0
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot install binary delta generator' }
+          python automation/.github/scripts/package_patch.py $official $patched dist
+          if ($LASTEXITCODE -ne 0) { throw 'Binary patch did not round-trip' }
+          dotnet publish automation/src/PatchLauncher/PatchLauncher.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -o dist
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot publish patch launcher' }
+          $launcher = 'dist/PCL2NoRestrictDownload.exe'
+          if (!(Test-Path $launcher)) { throw 'Patch launcher is missing' }
+          & $launcher $official --patch-only
+          if ($LASTEXITCODE -ne 0) { throw 'Patch launcher failed to patch the official EXE' }
+          $manifest = Get-Content dist/manifest.json -Raw | ConvertFrom-Json
+          $patchedByLauncher = Join-Path $officialDir 'Plain Craft Launcher 2.NoRestrictDownload.exe'
+          if ((Get-FileHash $patchedByLauncher -Algorithm SHA256).Hash -ne $manifest.OutputSha256) { throw 'Patch launcher output differs from validated IL graft' }
+          if ((Get-FileHash $official -Algorithm SHA256).Hash -ne $manifest.OfficialSha256) { throw 'Official EXE was modified' }
+          Compress-Archive -Path $launcher,dist/manifest.json,dist/pcl.bsdiff -DestinationPath "PCL2NoRestrictDownload-$env:UPSTREAM_TAG.zip"
+      - name: Publish patch and launcher only
         if: ${{ !inputs.smoke_test }}
         shell: pwsh
         env:
           REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          $exe = 'upstream/Plain Craft Launcher 2/obj/Release/Plain Craft Launcher 2.exe'
-          if (!(Test-Path $exe) -or (Get-Item $exe).Length -eq 0) { throw 'Release executable is missing' }
           $source = git -C upstream rev-parse HEAD
-          if ($LASTEXITCODE -ne 0) { throw 'Could not identify upstream commit' }
           @"
-          Third-party build based on [Meloong-Git/PCL release $env:UPSTREAM_TAG](https://github.com/Meloong-Git/PCL/releases/tag/$env:UPSTREAM_TAG), commit $source.
-          Not an official PCL release. OpenCode generated the attached patch; the patch was validated and the resulting source was built successfully.
-          Upstream source and distribution terms: https://github.com/Meloong-Git/PCL
+          Third-party patch for the [official PCL $env:UPSTREAM_TAG](https://github.com/Meloong-Git/PCL/releases/tag/$env:UPSTREAM_TAG), upstream commit $source.
+          Download the official EXE separately. Extract this ZIP beside it and run PCL2NoRestrictDownload.exe. The original official EXE is verified and preserved; the launcher creates a patched copy locally and starts it. No PCL executable is distributed here.
           "@ | Set-Content -Encoding utf8 release-notes.md
-          Copy-Item $exe PCL-NoRestrictDownload.exe
-          gh release create $env:RELEASE_TAG PCL-NoRestrictDownload.exe RestrictMcDownload.patch --repo $env:REPO --target $env:GITHUB_SHA --title "Plain Craft Launcher (PCL) NoRestrictDownload $env:UPSTREAM_TAG" --notes-file release-notes.md
+          gh release create $env:RELEASE_TAG "PCL2NoRestrictDownload-$env:UPSTREAM_TAG.zip" --repo $env:REPO --target $env:GITHUB_SHA --title "Plain Craft Launcher (PCL) NoRestrictDownload patch $env:UPSTREAM_TAG" --notes-file release-notes.md
           if ($LASTEXITCODE -ne 0) { throw 'Failed to publish GitHub release' }
